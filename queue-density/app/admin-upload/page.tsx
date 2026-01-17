@@ -135,10 +135,10 @@ export default function UploadPage() {
                     focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="western">Western</option>
-                  <option value="noodles">Noodles</option>
-                  <option value="asian">Asian</option>
-                  <option value="malay">Malay</option>
-                  <option value="indian-deli">Indian/Deli</option>
+                  <option value="noodles" disabled>Noodles (Coming Soon)</option>
+                  <option value="asian" disabled>Asian (Coming Soon)</option>
+                  <option value="malay" disabled>Malay (Coming Soon)</option>
+                  <option value="indian-deli" disabled>Indian/Deli (Coming Soon)</option>
                 </select>
               </div>
 
