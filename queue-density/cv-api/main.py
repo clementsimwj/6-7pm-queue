@@ -27,22 +27,12 @@ def home():
     return """
     <html>
         <body>
-            <h2>Queue Analysis System</h2>
-            <h3>Upload Photo for Queue Analysis (with feet direction)</h3>
-            <form action="/analyze_queue" enctype="multipart/form-data" method="post">
-                <input name="file" type="file" accept="image/*">
-                <br><br>
-                <input type="submit" value="Analyze Queue">
-            </form>
-            <hr>
             <h3>Upload Photo for Basic Count (debug view)</h3>
             <form action="/count_debug" enctype="multipart/form-data" method="post">
                 <input name="file" type="file" accept="image/*">
                 <br><br>
                 <input type="submit" value="Count Debug">
             </form>
-            <hr>
-            <p><a href="/test_assets">Test all sample images</a></p>
         </body>
     </html>
     """
@@ -57,7 +47,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
 
     # Get queue regions - customize here
     # Middle region: Horizontal rectangle spanning entire width (offset 20% left), 40% height starting from middle
-    queue_x_start = int(width * 0.20)
+    queue_x_start = int(width * 0.15)
     queue_y_start = int(height / 2)
     queue_y_end = int(height / 2 + height * 0.4)
     queue_region_middle = (queue_x_start, queue_y_start, width, queue_y_end)
@@ -93,6 +83,61 @@ async def count_queue_debug(file: UploadFile = File(...)):
 
         keypoints = keypoints_all[i].cpu().numpy()
         angle = estimate_head_rotation_from_ear_width(keypoints)
+        
+        # ==================== FEET DIRECTION ANALYSIS (from analyze_queue) ====================
+        # Extract keypoints for feet direction
+        left_ankle = get_keypoint(keypoints, 15)
+        right_ankle = get_keypoint(keypoints, 16)
+        left_knee = get_keypoint(keypoints, 13)
+        right_knee = get_keypoint(keypoints, 14)
+        left_hip = get_keypoint(keypoints, 11)
+        right_hip = get_keypoint(keypoints, 12)
+        left_shoulder = get_keypoint(keypoints, 5)
+        right_shoulder = get_keypoint(keypoints, 6)
+        
+        # Calculate foot direction using geometric method
+        direction = None
+        alignment_score = None
+        if left_ankle is not None and right_ankle is not None:
+            direction = calculate_foot_direction_geometric(left_ankle, right_ankle, left_knee, right_knee, 
+                                                           left_hip, right_hip, left_shoulder, right_shoulder)
+            if direction is not None:
+                alignment_score = calculate_queue_alignment_score(direction)
+        
+        # Draw keypoints for debugging
+        if left_ankle is not None:
+            cv2.circle(image, tuple(left_ankle.astype(int)), 5, (255, 0, 0), -1)  # Blue
+        if right_ankle is not None:
+            cv2.circle(image, tuple(right_ankle.astype(int)), 5, (0, 255, 0), -1)  # Green
+        if left_knee is not None:
+            cv2.circle(image, tuple(left_knee.astype(int)), 5, (255, 128, 0), -1)  # Orange
+        if right_knee is not None:
+            cv2.circle(image, tuple(right_knee.astype(int)), 5, (0, 128, 255), -1)  # Light blue
+        
+        # Draw knee-to-ankle lines
+        if left_knee is not None and left_ankle is not None:
+            cv2.line(image, tuple(left_knee.astype(int)), tuple(left_ankle.astype(int)), (255, 0, 255), 2)
+        if right_knee is not None and right_ankle is not None:
+            cv2.line(image, tuple(right_knee.astype(int)), tuple(right_ankle.astype(int)), (255, 0, 255), 2)
+        
+        # Calculate center point for direction arrow
+        if left_ankle is not None and right_ankle is not None:
+            feet_center = ((left_ankle + right_ankle) / 2).astype(int)
+        elif left_ankle is not None:
+            feet_center = left_ankle.astype(int)
+        elif right_ankle is not None:
+            feet_center = right_ankle.astype(int)
+        else:
+            feet_center = None
+        
+        # Draw direction arrow
+        if direction is not None and feet_center is not None:
+            arrow_length = 40
+            end_x = int(feet_center[0] + arrow_length * math.cos(math.radians(direction)))
+            end_y = int(feet_center[1] + arrow_length * math.sin(math.radians(direction)))
+            cv2.arrowedLine(image, tuple(feet_center), (end_x, end_y), (0, 255, 255), 3, tipLength=0.3)
+        
+        # ==================== HEAD ANALYSIS (existing count_debug logic) ====================
         # Head keypoints indices
         head_kp_indices = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
         head_pts = keypoints[head_kp_indices]
@@ -152,11 +197,31 @@ async def count_queue_debug(file: UploadFile = File(...)):
             2
         )
         
+        # ==================== DISPLAY ALIGNMENT SCORE ====================
+        # Draw alignment score prominently (THIS IS WHAT YOU NEED TO SEE)
+        if alignment_score is not None:
+            cv2.putText(
+                image,
+                f"Align: {alignment_score:.2f}",
+                (x1, y1 - 45),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (0, 255, 255),  # Cyan color to stand out
+                2
+            )
+        
         # If head is detected in bottom region, exclude person from queue
-        if head_in_bottom_region or in_bottom_region:
+        if head_in_bottom_region:
             in_queue = False
         else:
-            in_queue = angle_ok and in_middle_region and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
+            # Original condition: head angle + region + height
+            original_condition = angle_ok and in_middle_region and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
+            
+            # New condition: alignment score based detection
+            alignment_condition = in_middle_region and (alignment_score is not None and 0.65 <= alignment_score <= 1.0)
+            
+            # Person is in queue if EITHER condition is met
+            in_queue = original_condition or alignment_condition
         
         # Draw bounding boxes
         color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = in queue region, Red = outside
@@ -642,190 +707,3 @@ def calculate_queue_alignment_score(direction_degrees):
     angle_radians = math.radians(direction_degrees)
     score = (1 - math.cos(angle_radians)) / 2
     return score
-
-
-@app.post("/analyze_queue")
-async def analyze_queue(file: UploadFile = File(...)):
-    """
-    Analyze queue using feet detection and direction
-    Returns: count, average direction, and annotated image
-    """
-    image_bytes = await file.read()
-    pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    width, height = pil_image.size
-    image = np.array(pil_image)
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-
-    # Run YOLO pose detection
-    results = model(pil_image, conf=0.25)
-    
-    if len(results[0].keypoints.xy) == 0:
-        return JSONResponse({
-            "people_count": 0,
-            "queue_length": 0,
-            "average_direction": None,
-            "message": "No people detected"
-        })
-
-    queue_members = []
-    boxes = results[0].boxes.xyxy
-    keypoints_data = results[0].keypoints.xy
-
-    # COCO keypoint indices:
-    # 0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
-    # 5: left_shoulder, 6: right_shoulder, 7: left_elbow, 8: right_elbow
-    # 9: left_wrist, 10: right_wrist, 11: left_hip, 12: right_hip
-    # 13: left_knee, 14: right_knee, 15: left_ankle, 16: right_ankle
-
-    for idx, (box, keypoints) in enumerate(zip(boxes, keypoints_data)):
-        x1, y1, x2, y2 = map(int, box.tolist())
-        bbox_height = y2 - y1
-        relative_height = bbox_height / height
-
-        # Filter out distant people
-        if relative_height < MIN_QUEUE_HEIGHT_RATIO:
-            cv2.rectangle(image, (x1, y1), (x2, y2), (128, 128, 128), 1)
-            continue
-
-        # Extract keypoints
-        left_ankle = get_keypoint(keypoints, 15)
-        right_ankle = get_keypoint(keypoints, 16)
-        left_knee = get_keypoint(keypoints, 13)
-        right_knee = get_keypoint(keypoints, 14)
-        left_hip = get_keypoint(keypoints, 11)
-        right_hip = get_keypoint(keypoints, 12)
-        left_shoulder = get_keypoint(keypoints, 5)
-        right_shoulder = get_keypoint(keypoints, 6)
-
-        # Check if at least both ankles are detected
-        if left_ankle is None or right_ankle is None:
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 2)
-            cv2.putText(image, "Need both feet", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-            continue
-
-        # Calculate direction using geometric method
-        direction = calculate_foot_direction_geometric(left_ankle, right_ankle, left_knee, right_knee, 
-                                                       left_hip, right_hip, left_shoulder, right_shoulder)
-        
-        # Draw keypoints for debugging
-        if left_ankle is not None:
-            cv2.circle(image, tuple(left_ankle.astype(int)), 5, (255, 0, 0), -1)  # Blue
-        if right_ankle is not None:
-            cv2.circle(image, tuple(right_ankle.astype(int)), 5, (0, 255, 0), -1)  # Green
-        if left_knee is not None:
-            cv2.circle(image, tuple(left_knee.astype(int)), 5, (255, 128, 0), -1)  # Orange
-        if right_knee is not None:
-            cv2.circle(image, tuple(right_knee.astype(int)), 5, (0, 128, 255), -1)  # Light blue
-        
-        # Draw knee-to-ankle lines
-        if left_knee is not None and left_ankle is not None:
-            cv2.line(image, tuple(left_knee.astype(int)), tuple(left_ankle.astype(int)), (255, 0, 255), 2)
-        if right_knee is not None and right_ankle is not None:
-            cv2.line(image, tuple(right_knee.astype(int)), tuple(right_ankle.astype(int)), (255, 0, 255), 2)
-
-        # Calculate center point for direction arrow
-        if left_ankle is not None and right_ankle is not None:
-            center = ((left_ankle + right_ankle) / 2).astype(int)
-        elif left_ankle is not None:
-            center = left_ankle.astype(int)
-        else:
-            center = right_ankle.astype(int)
-
-        # Draw direction arrow
-        if direction is not None:
-            # Calculate queue alignment score (1.0 = facing left/stall, 0.0 = facing right/away)
-            alignment_score = calculate_queue_alignment_score(direction)
-            
-            arrow_length = 40
-            end_x = int(center[0] + arrow_length * math.cos(math.radians(direction)))
-            end_y = int(center[1] + arrow_length * math.sin(math.radians(direction)))
-            cv2.arrowedLine(image, tuple(center), (end_x, end_y), (0, 255, 255), 3, tipLength=0.3)
-            
-            # Draw bounding box and alignment score
-            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(image, f"{alignment_score:.2f}", (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-
-            queue_members.append({
-                "id": idx,
-                "direction": direction,
-                "alignment_score": alignment_score,
-                "position": center.tolist(),
-                "bbox": [x1, y1, x2, y2]
-            })
-
-    # Calculate statistics
-    queue_length = len(queue_members)
-    if queue_length > 0:
-        directions = [m["direction"] for m in queue_members]
-        avg_direction = sum(directions) / len(directions)
-    else:
-        avg_direction = None
-
-    # Convert back to PIL and then to bytes
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    pil_out = Image.fromarray(image)
-    buf = io.BytesIO()
-    pil_out.save(buf, format="JPEG")
-    buf.seek(0)
-
-    return StreamingResponse(buf, media_type="image/jpeg", 
-                           headers={
-                               "X-Queue-Length": str(queue_length),
-                               "X-Average-Direction": str(avg_direction) if avg_direction else "null"
-                           })
-
-
-@app.get("/test_assets")
-async def test_assets():
-    """
-    Test endpoint to analyze all images in Assets/SamplePics
-    """
-    assets_path = Path("Assets/SamplePics")
-    if not assets_path.exists():
-        return {"error": "Assets/SamplePics directory not found"}
-    
-    results = []
-    for img_file in assets_path.glob("*.jpg"):
-        with open(img_file, "rb") as f:
-            image_bytes = f.read()
-        
-        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        width, height = pil_image.size
-        
-        # Run YOLO pose detection
-        detection_results = model(pil_image, conf=0.25)
-        
-        if len(detection_results[0].keypoints.xy) == 0:
-            results.append({
-                "file": img_file.name,
-                "queue_length": 0,
-                "people_detected": 0
-            })
-            continue
-        
-        queue_count = 0
-        boxes = detection_results[0].boxes.xyxy
-        keypoints_data = detection_results[0].keypoints.xy
-        
-        for box, keypoints in zip(boxes, keypoints_data):
-            x1, y1, x2, y2 = map(int, box.tolist())
-            bbox_height = y2 - y1
-            relative_height = bbox_height / height
-            
-            if relative_height < MIN_QUEUE_HEIGHT_RATIO:
-                continue
-            
-            # Check for feet
-            left_ankle = get_keypoint(keypoints, 15)
-            right_ankle = get_keypoint(keypoints, 16)
-            
-            if left_ankle is not None or right_ankle is not None:
-                queue_count += 1
-        
-        results.append({
-            "file": img_file.name,
-            "queue_length": queue_count,
-            "people_detected": len(boxes)
-        })
-    
-    return {"results": results}
