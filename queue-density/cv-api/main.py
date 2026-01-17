@@ -19,6 +19,7 @@ cap = cv2.VideoCapture(0)
 MIN_QUEUE_HEIGHT_RATIO = 0.20 # Filters Distant People not in Queue
 QUEUE_REGION = None  # Will be set based on image - define your queue region here
 QUEUE_REGION_THRESHOLD = 0.6  # 60% of person must be in region
+CONSECUTIVE_PERSON_DISTANCE_THRESHOLD = 260  # Distance threshold between consecutive persons (in pixels)
 
 
 # Base route
@@ -72,7 +73,8 @@ async def count_queue_debug(file: UploadFile = File(...)):
     all_keypoints = np.vstack(all_keypoints)
 
     queue_count = 0
-    valid_persons = []  # Store valid person boxes: [x1, y1, x2, y2]
+    valid_persons = []  # Store valid person boxes: [x1, y1, x2, y2, person_index]
+    person_in_queue_status = {}  # Track in_queue status by original person index
     
     boxes = results[0].boxes.xyxy
     keypoints_all = results[0].keypoints.xy
@@ -83,7 +85,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
         relative_height = bbox_height / height
 
         keypoints = keypoints_all[i].cpu().numpy()
-        angle = estimate_head_rotation_from_ear_width(keypoints)
+        angle = estimate_head_rotation_from_keypoints(keypoints)[0]
         
         # ==================== FEET DIRECTION ANALYSIS (from analyze_queue) ====================
         # Extract keypoints for feet direction
@@ -229,8 +231,9 @@ async def count_queue_debug(file: UploadFile = File(...)):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         if in_queue:
             queue_count += 1
-            # Store valid person's bounding box for distance calculation
-            valid_persons.append([x1, y1, x2, y2])
+            # Store valid person's bounding box for distance calculation and track index
+            valid_persons.append({'box': [x1, y1, x2, y2], 'original_index': i})
+            person_in_queue_status[i] = True
     
     # ==================== DRAW LINES AND CALCULATE DISTANCES BETWEEN VALID PERSONS ====================
     # Starting point: left-most corner of middle region
@@ -240,7 +243,9 @@ async def count_queue_debug(file: UploadFile = File(...)):
     if len(valid_persons) > 0:
         # Calculate left-hand corners and distances for each person
         persons_with_distances = []
-        for i, person_box in enumerate(valid_persons):
+        for person_data in valid_persons:
+            person_box = person_data['box']
+            original_index = person_data['original_index']
             x1, y1, x2, y2 = person_box
             left_corner = (x1, y1)  # Top left corner
             
@@ -249,7 +254,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
             
             # Store person data: [person_index, box, left_corner, distance]
             persons_with_distances.append({
-                'index': i,
+                'index': original_index,
                 'box': person_box,
                 'left_corner': left_corner,
                 'distance': distance_from_start
@@ -257,6 +262,46 @@ async def count_queue_debug(file: UploadFile = File(...)):
         
         # Sort persons by distance
         sorted_persons = sorted(persons_with_distances, key=lambda p: p['distance'])
+        
+        # Identify valid queue members based on consecutive distance threshold
+        queue_members = []
+        queue_broken = False
+        excluded_indices = []  # Track indices of excluded persons
+        
+        # Check distance from region start to first person
+        first_person = sorted_persons[0]
+        distance_to_first = math.sqrt((region_start_point[0] - first_person['left_corner'][0])**2 + 
+                                      (region_start_point[1] - first_person['left_corner'][1])**2)
+        
+        if distance_to_first <= CONSECUTIVE_PERSON_DISTANCE_THRESHOLD:
+            queue_members.append(first_person)
+        else:
+            queue_broken = True
+            excluded_indices.append(first_person['index'])
+        
+        # Check consecutive distances
+        for idx in range(1, len(sorted_persons)):
+            if queue_broken:
+                excluded_indices.append(sorted_persons[idx]['index'])
+                continue
+            
+            prev_person = sorted_persons[idx - 1]
+            curr_person = sorted_persons[idx]
+            
+            # Calculate distance between consecutive persons
+            consecutive_distance = math.sqrt((prev_person['left_corner'][0] - curr_person['left_corner'][0])**2 + 
+                                           (prev_person['left_corner'][1] - curr_person['left_corner'][1])**2)
+            
+            # Check if distance exceeds threshold
+            if consecutive_distance > CONSECUTIVE_PERSON_DISTANCE_THRESHOLD:
+                queue_broken = True
+                excluded_indices.append(curr_person['index'])
+            else:
+                queue_members.append(curr_person)
+        
+        # Update person_in_queue_status to invalidate excluded persons
+        for excluded_idx in excluded_indices:
+            person_in_queue_status[excluded_idx] = False
         
         # Draw circles at all corners
         for person_data in sorted_persons:
@@ -267,7 +312,11 @@ async def count_queue_debug(file: UploadFile = File(...)):
             if idx == 0:
                 # First person: draw line from region start
                 current_person = sorted_persons[idx]
-                cv2.line(image, region_start_point, current_person['left_corner'], (0, 200, 255), 2)
+                
+                # Use different color if person is outside queue
+                line_color = (0, 200, 255) if current_person in queue_members else (0, 0, 255)
+                
+                cv2.line(image, region_start_point, current_person['left_corner'], line_color, 2)
                 
                 distance = math.sqrt((region_start_point[0] - current_person['left_corner'][0])**2 + 
                                    (region_start_point[1] - current_person['left_corner'][1])**2)
@@ -280,7 +329,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
                     midpoint,
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
-                    (0, 200, 255),
+                    line_color,
                     2
                 )
             else:
@@ -291,36 +340,69 @@ async def count_queue_debug(file: UploadFile = File(...)):
                 prev_corner = prev_person['left_corner']
                 curr_corner = curr_person['left_corner']
                 
+                # Use different color if person is outside queue
+                line_color = (0, 200, 255) if curr_person in queue_members else (0, 0, 255)
+                
                 # Draw line between persons
-                cv2.line(image, prev_corner, curr_corner, (0, 200, 255), 2)
+                cv2.line(image, prev_corner, curr_corner, line_color, 2)
                 
                 # Calculate distance between consecutive persons
                 distance = math.sqrt((prev_corner[0] - curr_corner[0])**2 + (prev_corner[1] - curr_corner[1])**2)
+                
+                # Mark with warning if exceeds threshold
+                distance_label = f"P{idx}->P{idx+1}: {distance:.1f}px"
+                if distance > CONSECUTIVE_PERSON_DISTANCE_THRESHOLD:
+                    distance_label += " [BREAK]"
                 
                 # Draw distance text at midpoint
                 midpoint = ((prev_corner[0] + curr_corner[0]) // 2, (prev_corner[1] + curr_corner[1]) // 2)
                 cv2.putText(
                     image,
-                    f"P{idx}->P{idx+1}: {distance:.1f}px",
+                    distance_label,
                     midpoint,
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.5,
-                    (0, 200, 255),
+                    line_color,
                     2
                 )
         
         # Print sorted persons for debugging
+        print(f"Threshold for queue break: {CONSECUTIVE_PERSON_DISTANCE_THRESHOLD}px")
         print("Sorted persons by distance from region start:")
         for idx, person_data in enumerate(sorted_persons):
-            print(f"  Person {idx + 1}: Distance from start = {person_data['distance']:.1f}px, Box = {person_data['box']}")
+            status = "IN QUEUE" if person_data in queue_members else "EXCLUDED (queue broken)"
+            print(f"  Person {idx + 1}: Distance from start = {person_data['distance']:.1f}px, Status: {status}")
         
-        print("\nConsecutive distances:")
+        print(f"\nQueue members in valid queue: {len(queue_members)}")
+        
+        # Print distance from start to first person
+        print(f"\nDistance from region start to first person: {distance_to_first:.1f}px - ", end="")
+        if distance_to_first <= CONSECUTIVE_PERSON_DISTANCE_THRESHOLD:
+            print("OK (within threshold)")
+        else:
+            print("EXCEEDS THRESHOLD - QUEUE BROKEN FROM START")
+        
+        print("Consecutive distances:")
         for idx in range(1, len(sorted_persons)):
             prev_person = sorted_persons[idx - 1]
             curr_person = sorted_persons[idx]
             distance = math.sqrt((prev_person['left_corner'][0] - curr_person['left_corner'][0])**2 + 
                                (prev_person['left_corner'][1] - curr_person['left_corner'][1])**2)
-            print(f"  Person {idx} to Person {idx + 1}: {distance:.1f}px")
+            status = "OK" if distance <= CONSECUTIVE_PERSON_DISTANCE_THRESHOLD else "EXCEEDS THRESHOLD - QUEUE BROKEN"
+            print(f"  Person {idx} to Person {idx + 1}: {distance:.1f}px - {status}")
+    
+    # After processing all persons and determining queue breaks, redraw boxes based on final status
+    for original_index, in_queue_status in person_in_queue_status.items():
+        # Find this person in boxes and redraw with appropriate color
+        box = results[0].boxes.xyxy[original_index]
+        x1, y1, x2, y2 = map(int, box.tolist())
+        
+        if in_queue_status:
+            # Green for persons in final valid queue
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        else:
+            # Red for persons excluded due to queue break
+            cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 3)
     # Convert back to PIL and then to bytes
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     pil_out = Image.fromarray(image)
@@ -328,7 +410,12 @@ async def count_queue_debug(file: UploadFile = File(...)):
     pil_out.save(buf, format="JPEG")
     buf.seek(0)
 
-    print(f"Persons in queue: {queue_count}")
+    # Calculate actual queue count based on final person_in_queue_status
+    final_queue_count = sum(1 for status in person_in_queue_status.values() if status)
+    
+    print(f"Persons initially detected in queue region: {queue_count}")
+    print(f"Persons in final valid queue (after distance threshold): {final_queue_count}")
+    print(f"Persons excluded due to queue break: {queue_count - final_queue_count}")
     return StreamingResponse(buf, media_type="image/jpeg")
 
 
@@ -477,67 +564,169 @@ def face_width_from_ear(keypoints):
             return abs(right_eye[0] - left_eye[0])
         return None
 
-def estimate_head_rotation_from_ear_width(keypoints):
+def estimate_head_rotation_from_keypoints(keypoints):
     """
-    Estimates head rotation using visible ear to farthest facial point.
+    Estimates head yaw rotation using YOLO pose keypoints.
+    
+    Args:
+        keypoints: Array of shape (N, 2) or (N, 3) where N >= 7
+                   [0]=nose, [1]=left_eye, [2]=right_eye, 
+                   [3]=left_ear, [4]=right_ear,
+                   [5]=left_shoulder, [6]=right_shoulder
+    
     Returns:
-        angle (int): 0 = facing camera, 90 = facing left, 180 = facing back, 270 = facing right
+        angle (int): Yaw angle in degrees
+                     0° = facing camera
+                     90° = facing left  
+                     -90° (or 270°) = facing right
+                     ±180° = facing away
+        confidence (float): 0.0 to 1.0 indicating estimation confidence
     """
-
-    # YOLO pose keypoints: 0=nose, 1=left_eye, 2=right_eye, 3=left_ear, 4=right_ear
-    nose = keypoints[0]
-    left_eye = keypoints[1]
-    right_eye = keypoints[2]
-    left_ear = keypoints[3]
-    right_ear = keypoints[4]
-    left_shoulder = keypoints[5]
-    right_shoulder = keypoints[6]
-
-
-    # Collect valid facial points (nose + eyes)
-    face_points = [nose, left_eye, right_eye]
-    valid_pts = np.array([pt for pt in face_points if not np.any(pt == 0)])
-    if len(valid_pts) == 0:
-        return None
-
-    # --- Shoulder width estimation ---
-    shoulder_width = None
-
-    if not np.any(left_shoulder == 0) and not np.any(right_shoulder == 0):
-        shoulder_width = abs(right_shoulder[0] - left_shoulder[0])
-
+    
+    # Extract keypoints
+    nose = keypoints[0][:2]
+    left_eye = keypoints[1][:2]
+    right_eye = keypoints[2][:2]
+    left_ear = keypoints[3][:2]
+    right_ear = keypoints[4][:2]
+    left_shoulder = keypoints[5][:2]
+    right_shoulder = keypoints[6][:2]
+    
+    # Check validity (assuming [0,0] or very low confidence means invalid)
+    def is_valid(pt):
+        return not (pt[0] < 1 and pt[1] < 1)
+    
+    # -----------------------------
+    # Method 1: Eye-Nose Triangle (most reliable for frontal views)
+    # -----------------------------
+    if is_valid(nose) and is_valid(left_eye) and is_valid(right_eye):
+        # Calculate face center from eyes
+        eye_center = (left_eye + right_eye) / 2
+        
+        # Vector from eye center to nose
+        eye_to_nose = nose - eye_center
+        
+        # Vector along eye line (left to right)
+        eye_line = right_eye - left_eye
+        eye_distance = np.linalg.norm(eye_line)
+        
+        if eye_distance > 5:  # Minimum threshold
+            # Normalize eye line
+            eye_line_norm = eye_line / eye_distance
+            
+            # Project nose displacement onto eye line (lateral offset)
+            lateral_offset = np.dot(eye_to_nose, eye_line_norm)
+            
+            # Asymmetry ratio: how far nose is from eye midpoint
+            asymmetry = lateral_offset / eye_distance
+            
+            # This gives us a good yaw estimate for ±60° range
+            # asymmetry: -0.5 to +0.5 maps roughly to -60° to +60°
+            yaw_from_eyes = np.clip(asymmetry * 120, -75, 75)
+        else:
+            yaw_from_eyes = None
     else:
-        # Fallback: estimate shoulder width from head width
-        if not np.any(left_eye == 0) and not np.any(right_eye == 0):
-            eye_width = abs(right_eye[0] - left_eye[0])
-            shoulder_width = eye_width * 2.2  # human proportion
-        elif not np.any(left_ear == 0) or not np.any(right_ear == 0):
-            face_x = valid_pts[:, 0]
-            shoulder_width = (face_x.max() - face_x.min()) * 2.5
-
-    if shoulder_width is None or shoulder_width < 5:
-        shoulder_width = 50  # final fallback constant
-
-    # --- Ear visibility ---
-    left_ear_visible = not np.any(left_ear == 0)
-    right_ear_visible = not np.any(right_ear == 0)
-
-    # --- Angle estimation ---
-    if left_ear_visible:
-        distances = valid_pts[:, 0] - left_ear[0]
-        fw_ratio = np.clip(np.max(distances) / shoulder_width, 0.0, 1.0)
-        angle = fw_ratio * 270
-
-    elif right_ear_visible:
-        distances = right_ear[0] - valid_pts[:, 0]
-        fw_ratio = np.clip(np.max(distances) / shoulder_width, 0.0, 1.0)
-        angle = 360 - fw_ratio * 270
-
+        yaw_from_eyes = None
+    
+    # -----------------------------
+    # Method 2: Ear Visibility Analysis
+    # -----------------------------
+    left_ear_vis = is_valid(left_ear)
+    right_ear_vis = is_valid(right_ear)
+    
+    yaw_from_ears = None
+    ear_confidence = 0.0
+    
+    if left_ear_vis or right_ear_vis:
+        # Calculate face center
+        face_points = [p for p, v in [(nose, is_valid(nose)), 
+                                       (left_eye, is_valid(left_eye)), 
+                                       (right_eye, is_valid(right_eye))] if v]
+        
+        if len(face_points) > 0:
+            face_center = np.mean(face_points, axis=0)
+            
+            # Reference width (shoulder or eye distance)
+            if is_valid(left_shoulder) and is_valid(right_shoulder):
+                ref_width = np.linalg.norm(right_shoulder - left_shoulder)
+            elif is_valid(left_eye) and is_valid(right_eye):
+                ref_width = np.linalg.norm(right_eye - left_eye) * 2.5
+            else:
+                ref_width = 100  # fallback
+            
+            if left_ear_vis and not right_ear_vis:
+                # Head turned to the right (left ear visible)
+                ear_to_face = np.linalg.norm(left_ear - face_center)
+                ratio = np.clip(ear_to_face / ref_width, 0.0, 1.5)
+                # Maps to 45° to 135° range
+                yaw_from_ears = 45 + ratio * 60
+                ear_confidence = 0.7
+                
+            elif right_ear_vis and not left_ear_vis:
+                # Head turned to the left (right ear visible)
+                ear_to_face = np.linalg.norm(right_ear - face_center)
+                ratio = np.clip(ear_to_face / ref_width, 0.0, 1.5)
+                # Maps to -45° to -135° range
+                yaw_from_ears = -45 - ratio * 60
+                ear_confidence = 0.7
+                
+            elif left_ear_vis and right_ear_vis:
+                # Both ears visible
+                left_dist = np.linalg.norm(left_ear - face_center)
+                right_dist = np.linalg.norm(right_ear - face_center)
+                
+                # Check if one ear is much farther (indicates rotation)
+                dist_ratio = abs(left_dist - right_dist) / max(left_dist, right_dist, 1)
+                
+                if dist_ratio < 0.3:
+                    # Similar distances - likely frontal or back view
+                    if is_valid(nose):
+                        yaw_from_ears = 0  # frontal
+                        ear_confidence = 0.5
+                    else:
+                        yaw_from_ears = 180  # back view
+                        ear_confidence = 0.4
+                else:
+                    # Asymmetric - use ear distances
+                    if left_dist > right_dist:
+                        yaw_from_ears = 30  # slight right turn
+                    else:
+                        yaw_from_ears = -30  # slight left turn
+                    ear_confidence = 0.4
+    
+    # -----------------------------
+    # Combine Methods
+    # -----------------------------
+    if yaw_from_eyes is not None and yaw_from_ears is not None:
+        # Weighted average based on angle magnitude
+        # Trust eye method more for frontal views
+        eye_weight = max(0.3, 1.0 - abs(yaw_from_eyes) / 90)
+        ear_weight = ear_confidence
+        
+        total_weight = eye_weight + ear_weight
+        final_yaw = (yaw_from_eyes * eye_weight + yaw_from_ears * ear_weight) / total_weight
+        confidence = min(0.9, (eye_weight + ear_weight) / 2)
+        
+    elif yaw_from_eyes is not None:
+        final_yaw = yaw_from_eyes
+        confidence = 0.7
+        
+    elif yaw_from_ears is not None:
+        final_yaw = yaw_from_ears
+        confidence = ear_confidence
+        
     else:
-        # No ears → assume frontal
-        angle = 0
-
-    return int(angle % 360)
+        # Fallback: no reliable features detected
+        if is_valid(nose):
+            final_yaw = 0
+        else:
+            final_yaw = 180
+        confidence = 0.1
+    
+    # Convert to 0-360 range if needed
+    angle = int(final_yaw % 360)
+    
+    return angle, round(confidence, 2)
 
 
 # ==================== NEW FUNCTIONS FROM FEET DIRECTION ANALYSIS ====================
