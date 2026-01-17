@@ -416,7 +416,9 @@ async def count_queue_debug(file: UploadFile = File(...)):
     print(f"Persons initially detected in queue region: {queue_count}")
     print(f"Persons in final valid queue (after distance threshold): {final_queue_count}")
     print(f"Persons excluded due to queue break: {queue_count - final_queue_count}")
-    return StreamingResponse(buf, media_type="image/jpeg")
+    return StreamingResponse(buf, media_type="image/jpeg", headers={
+        "X-Queue-Count": str(final_queue_count)
+    })
 
 
 def get_queue_region(width, height, position="left", percentage=0.33):

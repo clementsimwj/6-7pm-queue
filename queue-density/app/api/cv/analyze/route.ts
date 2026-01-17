@@ -62,13 +62,26 @@ export async function POST(request: NextRequest) {
     // Get the image buffer from FastAPI
     const imageBuffer = await response.arrayBuffer();
 
-    // Return the image with proper headers
+    // Extract queue count from response headers
+    const queueCount = response.headers.get('X-Queue-Count');
+    console.log('Queue count from Python backend:', queueCount);
+
+    // Return the image with proper headers including queue count
+    const headers: Record<string, string> = {
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'no-store',
+    };
+    
+    if (queueCount) {
+      headers['X-Queue-Count'] = queueCount;
+      console.log('Forwarding queue count to frontend:', queueCount);
+    } else {
+      console.warn('No X-Queue-Count header received from Python backend');
+    }
+
     return new NextResponse(imageBuffer, {
       status: 200,
-      headers: {
-        'Content-Type': 'image/jpeg',
-        'Cache-Control': 'no-store',
-      },
+      headers,
     });
   } catch (error) {
     console.error('Error in CV proxy:', error);

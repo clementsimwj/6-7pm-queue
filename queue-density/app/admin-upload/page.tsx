@@ -69,12 +69,13 @@ export default function UploadPage() {
       setAnnotatedImage(imageUrl);
       setLastUpdated(new Date());
 
-      // TODO: Parse queue count from Python response
-      // For now, using a mock value - this will be replaced when Python backend
-      // returns JSON with queue count
-      const mockQueueCount = 8; // This should come from Python API
-      const queueStatus = getQueueStatus(mockQueueCount);
-      setQueueCount(mockQueueCount);
+      // Parse queue count from response headers
+      const queueCountHeader = response.headers.get('X-Queue-Count');
+      console.log('Queue count header received:', queueCountHeader);
+      const actualQueueCount = queueCountHeader ? parseInt(queueCountHeader, 10) : 0;
+      console.log('Parsed queue count:', actualQueueCount);
+      const queueStatus = getQueueStatus(actualQueueCount);
+      setQueueCount(actualQueueCount);
 
       // Step 2: Update Supabase with the results
       const updateResponse = await fetch('/api/stalls/update', {
@@ -84,7 +85,7 @@ export default function UploadPage() {
         },
         body: JSON.stringify({
           stallId: selectedStall,
-          queueCount: mockQueueCount,
+          queueCount: actualQueueCount,
           queueStatus,
         }),
       });
