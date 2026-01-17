@@ -72,6 +72,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
     all_keypoints = np.vstack(all_keypoints)
 
     queue_count = 0
+    valid_persons = []  # Store valid person boxes: [x1, y1, x2, y2]
     
     boxes = results[0].boxes.xyxy
     keypoints_all = results[0].keypoints.xy
@@ -228,6 +229,98 @@ async def count_queue_debug(file: UploadFile = File(...)):
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         if in_queue:
             queue_count += 1
+            # Store valid person's bounding box for distance calculation
+            valid_persons.append([x1, y1, x2, y2])
+    
+    # ==================== DRAW LINES AND CALCULATE DISTANCES BETWEEN VALID PERSONS ====================
+    # Starting point: left-most corner of middle region
+    region_start_point = (queue_x_start, queue_y_start)
+    cv2.circle(image, region_start_point, 8, (255, 0, 0), -1)  # Blue circle at start point
+    
+    if len(valid_persons) > 0:
+        # Calculate left-hand corners and distances for each person
+        persons_with_distances = []
+        for i, person_box in enumerate(valid_persons):
+            x1, y1, x2, y2 = person_box
+            left_corner = (x1, y1)  # Top left corner
+            
+            # Calculate distance from region start to this person's leftmost corner
+            distance_from_start = math.sqrt((region_start_point[0] - left_corner[0])**2 + (region_start_point[1] - left_corner[1])**2)
+            
+            # Store person data: [person_index, box, left_corner, distance]
+            persons_with_distances.append({
+                'index': i,
+                'box': person_box,
+                'left_corner': left_corner,
+                'distance': distance_from_start
+            })
+        
+        # Sort persons by distance
+        sorted_persons = sorted(persons_with_distances, key=lambda p: p['distance'])
+        
+        # Draw circles at all corners
+        for person_data in sorted_persons:
+            cv2.circle(image, person_data['left_corner'], 5, (0, 200, 255), -1)
+        
+        # Draw continuous chain connecting consecutive persons and calculate distances
+        for idx in range(len(sorted_persons)):
+            if idx == 0:
+                # First person: draw line from region start
+                current_person = sorted_persons[idx]
+                cv2.line(image, region_start_point, current_person['left_corner'], (0, 200, 255), 2)
+                
+                distance = math.sqrt((region_start_point[0] - current_person['left_corner'][0])**2 + 
+                                   (region_start_point[1] - current_person['left_corner'][1])**2)
+                
+                midpoint = ((region_start_point[0] + current_person['left_corner'][0]) // 2, 
+                           (region_start_point[1] + current_person['left_corner'][1]) // 2)
+                cv2.putText(
+                    image,
+                    f"Start->P1: {distance:.1f}px",
+                    midpoint,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 200, 255),
+                    2
+                )
+            else:
+                # Consecutive persons: calculate distance between leftmost corners
+                prev_person = sorted_persons[idx - 1]
+                curr_person = sorted_persons[idx]
+                
+                prev_corner = prev_person['left_corner']
+                curr_corner = curr_person['left_corner']
+                
+                # Draw line between persons
+                cv2.line(image, prev_corner, curr_corner, (0, 200, 255), 2)
+                
+                # Calculate distance between consecutive persons
+                distance = math.sqrt((prev_corner[0] - curr_corner[0])**2 + (prev_corner[1] - curr_corner[1])**2)
+                
+                # Draw distance text at midpoint
+                midpoint = ((prev_corner[0] + curr_corner[0]) // 2, (prev_corner[1] + curr_corner[1]) // 2)
+                cv2.putText(
+                    image,
+                    f"P{idx}->P{idx+1}: {distance:.1f}px",
+                    midpoint,
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 200, 255),
+                    2
+                )
+        
+        # Print sorted persons for debugging
+        print("Sorted persons by distance from region start:")
+        for idx, person_data in enumerate(sorted_persons):
+            print(f"  Person {idx + 1}: Distance from start = {person_data['distance']:.1f}px, Box = {person_data['box']}")
+        
+        print("\nConsecutive distances:")
+        for idx in range(1, len(sorted_persons)):
+            prev_person = sorted_persons[idx - 1]
+            curr_person = sorted_persons[idx]
+            distance = math.sqrt((prev_person['left_corner'][0] - curr_person['left_corner'][0])**2 + 
+                               (prev_person['left_corner'][1] - curr_person['left_corner'][1])**2)
+            print(f"  Person {idx} to Person {idx + 1}: {distance:.1f}px")
     # Convert back to PIL and then to bytes
     image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     pil_out = Image.fromarray(image)
