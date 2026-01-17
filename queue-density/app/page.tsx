@@ -2,46 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import type { Stall, QueueStatus } from '@/lib/types';
+import { supabase } from '@/lib/supabase';
+import type { Stall, QueueStatus, StallId } from '@/lib/types';
 
-// Mock data - will be replaced with real data from backend/database later
-const stalls: Stall[] = [
-  {
-    id: 'western',
-    name: 'Western',
-    queueCount: 8,
-    queueStatus: 'medium',
-    lastUpdated: new Date(),
-  },
-  {
-    id: 'noodles',
-    name: 'Noodles',
-    queueCount: null,
-    queueStatus: 'unknown',
-    lastUpdated: null,
-  },
-  {
-    id: 'asian',
-    name: 'Asian',
-    queueCount: null,
-    queueStatus: 'unknown',
-    lastUpdated: null,
-  },
-  {
-    id: 'malay',
-    name: 'Malay',
-    queueCount: null,
-    queueStatus: 'unknown',
-    lastUpdated: null,
-  },
-  {
-    id: 'indian-deli',
-    name: 'Indian/Deli',
-    queueCount: null,
-    queueStatus: 'unknown',
-    lastUpdated: null,
-  },
-];
+// Stall display names mapping
+const STALL_NAMES: Record<StallId, string> = {
+  western: 'Western',
+  noodles: 'Noodles',
+  asian: 'Asian',
+  malay: 'Malay',
+  'indian-deli': 'Indian/Deli',
+};
 
 function getStatusColor(status: QueueStatus): string {
   switch (status) {
@@ -84,10 +55,62 @@ function getStatusLabel(status: QueueStatus): string {
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
+  const [stalls, setStalls] = useState<Stall[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     setMounted(true);
+    fetchStalls();
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('stalls-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'stalls',
+        },
+        () => {
+          // Refetch data when any change occurs
+          fetchStalls();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
+
+  const fetchStalls = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('stalls')
+        .select('*')
+        .order('stall_id', { ascending: true });
+
+      if (error) throw error;
+
+      // Transform database records to Stall type
+      const transformedStalls: Stall[] = (data || []).map((record) => ({
+        id: record.stall_id,
+        name: STALL_NAMES[record.stall_id],
+        queueCount: record.queue_count,
+        queueStatus: record.queue_status,
+        lastUpdated: record.updated_at ? new Date(record.updated_at) : null,
+      }));
+
+      setStalls(transformedStalls);
+      setLoading(false);
+    } catch (err) {
+      console.error('Error fetching stalls:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load stalls');
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-gray-900">
@@ -119,8 +142,45 @@ export default function Home() {
           </p>
         </div>
 
+        {/* Loading State */}
+        {loading && (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-center">
+              <svg
+                className="animate-spin h-8 w-8 text-blue-500 mx-auto mb-3"
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+              >
+                <circle
+                  className="opacity-25"
+                  cx="12"
+                  cy="12"
+                  r="10"
+                  stroke="currentColor"
+                  strokeWidth="4"
+                ></circle>
+                <path
+                  className="opacity-75"
+                  fill="currentColor"
+                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                ></path>
+              </svg>
+              <p className="text-gray-400">Loading stalls...</p>
+            </div>
+          </div>
+        )}
+
+        {/* Error State */}
+        {error && (
+          <div className="bg-red-900/50 border border-red-700 text-red-300 px-4 py-3 rounded-md mb-6">
+            <p className="text-sm">Error: {error}</p>
+          </div>
+        )}
+
         {/* Stalls Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {!loading && !error && (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {stalls.map((stall) => (
             <div
               key={stall.id}
@@ -178,7 +238,8 @@ export default function Home() {
               </div>
             </div>
           ))}
-        </div>
+          </div>
+        )}
 
         {/* Info Banner */}
         <div className="mt-8 bg-blue-900/30 border border-blue-700 rounded-lg p-4">

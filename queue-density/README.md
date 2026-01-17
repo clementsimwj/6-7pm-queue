@@ -18,9 +18,18 @@ Copy the example environment file and configure it:
 cp .env.local.example .env.local
 ```
 
-The default configuration points to `http://localhost:8000` for the CV API.
+Update `.env.local` with your actual credentials:
+- `CV_API_URL`: Default is `http://localhost:8000`
+- `NEXT_PUBLIC_SUPABASE_URL`: Your Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`: Your Supabase publishable API key
 
-### 2. Run the FastAPI CV Service
+### 2. Set Up Supabase Database
+
+1. Create a new project in [Supabase](https://supabase.com)
+2. Go to the SQL Editor in your Supabase dashboard
+3. Run the SQL statements from `supabase-schema.sql` to create the tables and initial data
+
+### 3. Run the FastAPI CV Service
 
 Navigate to the `cv-api` directory and start the FastAPI server:
 
@@ -41,7 +50,7 @@ pip install -r requirements.txt
 
 The CV API will be available at [http://localhost:8000](http://localhost:8000)
 
-### 3. Run the Next.js Frontend
+### 4. Run the Next.js Frontend
 
 In a separate terminal, from the project root:
 
@@ -52,22 +61,27 @@ npm run dev
 
 The Next.js app will be available at [http://localhost:3000](http://localhost:3000)
 
-### 4. Access the Upload UI
+### 5. Access the Application
 
-Open your browser to [http://localhost:3000/admin-upload](http://localhost:3000/admin-upload)
+- **Landing Page**: [http://localhost:3000](http://localhost:3000) - View real-time queue status for all stalls
+- **Admin Upload**: [http://localhost:3000/admin-upload](http://localhost:3000/admin-upload) - Upload images for analysis
 
 ## How It Works
+**Admin uploads image** for a specific stall via `/admin-upload`
+2. Image is sent to Next.js API route (`/api/cv/analyze`)
+3. Next.js API proxy forwards to FastAPI (`/count_debug` endpoint)
+4. **FastAPI runs YOLOv8** pose detection to count people in queue
+5. People are classified as "in queue" (green) or "filtered out" (red) based on height ratio
+6. **Annotated image returned** to browser for display
+7. **Queue count and status saved** to Supabase database
+8. **Landing page auto-updates** via real-time subscription when data changes
 
-1. User selects an image in the Next.js UI
-2. Image is uploaded to Next.js API route (`/api/cv/analyze`)
-3. Next.js API proxy forwards the image to FastAPI (`/count_debug` endpoint)
-4. FastAPI runs YOLOv8 pose detection to identify people
-5. People are classified as "in queue" (green boxes) or "filtered out" (red boxes) based on their height ratio
-6. Annotated image is returned through the proxy to the browser
-
-This proxy approach:
-- Avoids CORS issues
+This architecture:
+- Avoids CORS issues with API proxy
 - Keeps CV API URL private (server-side only)
+- Maintains clean separation between frontend and CV backend
+- Provides real-time updates to all users viewing the landing page
+- No image storage costs - only metadata is persiste
 - Maintains clean separation between frontend and CV backend
 
 ## Project Structure

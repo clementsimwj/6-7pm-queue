@@ -1,6 +1,14 @@
 'use client';
 
 import { useState, useRef } from 'react';
+import type { StallId, QueueStatus } from '@/lib/types';
+
+// Helper function to determine queue status based on count
+function getQueueStatus(count: number): QueueStatus {
+  if (count <= 3) return 'low';
+  if (count <= 7) return 'medium';
+  return 'high';
+}
 
 export default function UploadPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -9,6 +17,8 @@ export default function UploadPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [selectedStall, setSelectedStall] = useState<StallId>('western');
+  const [queueCount, setQueueCount] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -40,6 +50,7 @@ export default function UploadPage() {
       const formData = new FormData();
       formData.append('file', selectedFile);
 
+      // Step 1: Get CV analysis from Python backend
       const response = await fetch('/api/cv/analyze', {
         method: 'POST',
         body: formData,
@@ -56,6 +67,31 @@ export default function UploadPage() {
       
       setAnnotatedImage(imageUrl);
       setLastUpdated(new Date());
+
+      // TODO: Parse queue count from Python response
+      // For now, using a mock value - this will be replaced when Python backend
+      // returns JSON with queue count
+      const mockQueueCount = 8; // This should come from Python API
+      const queueStatus = getQueueStatus(mockQueueCount);
+      setQueueCount(mockQueueCount);
+
+      // Step 2: Update Supabase with the results
+      const updateResponse = await fetch('/api/stalls/update', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          stallId: selectedStall,
+          queueCount: mockQueueCount,
+          queueStatus,
+        }),
+      });
+
+      if (!updateResponse.ok) {
+        console.error('Failed to update database, but image was processed');
+        // Don't throw - we still want to show the annotated image
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to process image');
       console.error('Upload error:', err);
@@ -70,6 +106,7 @@ export default function UploadPage() {
     setAnnotatedImage(null);
     setError(null);
     setLastUpdated(null);
+    setQueueCount(null);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
@@ -87,6 +124,24 @@ export default function UploadPage() {
             <h2 className="text-xl font-semibold text-white mb-4">Upload Image</h2>
             
             <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Select Stall
+                </label>
+                <select
+                  value={selectedStall}
+                  onChange={(e) => setSelectedStall(e.target.value as StallId)}
+                  className="block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white
+                    focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="western">Western</option>
+                  <option value="noodles">Noodles</option>
+                  <option value="asian">Asian</option>
+                  <option value="malay">Malay</option>
+                  <option value="indian-deli">Indian/Deli</option>
+                </select>
+              </div>
+
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-2">
                   Select Image
@@ -187,6 +242,13 @@ export default function UploadPage() {
 
             {annotatedImage ? (
               <div>
+                {queueCount !== null && (
+                  <div className="mb-4 p-4 bg-blue-900/30 border border-blue-700 rounded-md">
+                    <p className="text-sm text-gray-300">
+                      Queue Count: <span className="text-2xl font-bold text-blue-400">{queueCount}</span> people
+                    </p>
+                  </div>
+                )}
                 <img
                   src={annotatedImage}
                   alt="Annotated result"
