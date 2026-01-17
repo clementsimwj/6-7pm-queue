@@ -6,8 +6,8 @@ import Navbar from '../components/Navbar';
 
 // Helper function to determine queue status based on count
 function getQueueStatus(count: number): QueueStatus {
-  if (count <= 3) return 'low';
-  if (count <= 7) return 'medium';
+  if (count < 3) return 'low';
+  if (count <= 5) return 'medium';
   return 'high';
 }
 
@@ -121,7 +121,7 @@ export default function UploadPage() {
       
       <div className="py-8 px-4">
         <div className="max-w-7xl mx-auto">
-          <h1 className="text-3xl font-bold text-white mb-2">Queue Density Analyzer</h1>
+          <h1 className="text-3xl font-bold text-white mb-2">6-7pm Queue Monitor</h1>
           <p className="text-gray-400 mb-8">Upload an image to detect and count people in queue</p>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

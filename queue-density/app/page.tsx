@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
 import type { Stall, QueueStatus, StallId } from '@/lib/types';
 import Navbar from './components/Navbar';
@@ -117,18 +118,22 @@ export default function Home() {
       {/* Navbar */}
       <Navbar />
 
-      {/* Header */}
-      <header className="bg-gray-800 border-b border-gray-700">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <div className="flex items-center justify-center gap-4 mb-8">
+          <Image
+            src="/logo_main.png"
+            alt="6-7pm Queue Logo"
+            width={60}
+            height={60}
+            className="object-contain"
+          />
           <div>
-            <h1 className="text-3xl font-bold text-white">Dining Hall Queue Status</h1>
+            <h1 className="text-3xl font-bold text-white">6-7pm Queue Monitor</h1>
             <p className="text-gray-400 mt-1">Real-time queue monitoring for campus dining</p>
           </div>
         </div>
-      </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="mb-6">
           <h2 className="text-xl font-semibold text-white mb-2">Current Queue Status</h2>
           <p className="text-gray-400 text-sm">
@@ -253,10 +258,10 @@ export default function Home() {
             </svg>
             <div>
               <h4 className="text-sm font-semibold text-blue-400 mb-1">
-                Currently in Beta Testing
+                Currently in Proof of Concept Phase
               </h4>
               <p className="text-sm text-gray-300">
-                Queue monitoring is currently active for the Western stall only. Additional stalls will be added progressively.
+                Queue monitoring is currently active for the Western stall only.
               </p>
             </div>
           </div>
