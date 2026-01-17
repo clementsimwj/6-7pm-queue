@@ -128,11 +128,23 @@ async def count_queue_debug(file: UploadFile = File(...)):
         in_middle_region = is_in_queue_region(box.tolist(), queue_region_middle, QUEUE_REGION_THRESHOLD)
         in_bottom_region = is_in_queue_region(box.tolist(), queue_region_bottom, QUEUE_REGION_THRESHOLD)
         
+        # Display region status above bounding box
+        region_status = "Middle" if in_middle_region else ("Bottom" if in_bottom_region else "Outside")
+        cv2.putText(
+            image,
+            f"Region: {region_status}",
+            (x1, y1 - 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            2
+        )
+        
         # If head is detected in bottom region, exclude person from queue
-        if head_in_bottom_region:
+        if head_in_bottom_region or in_bottom_region:
             in_queue = False
         else:
-            in_queue = angle_ok and (in_middle_region or in_bottom_region) and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
+            in_queue = angle_ok and in_middle_region and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
         
         # Draw bounding boxes
         color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = in queue region, Red = outside
