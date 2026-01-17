@@ -12,10 +12,13 @@ from pathlib import Path
 app = FastAPI()
 
 # YOLOv8 pretrained model
-model = YOLO("yolov8m-pose.pt")
+model = YOLO("yolo26m-pose.pt")
+cap = cv2.VideoCapture(0)
 
 #Paramters
-MIN_QUEUE_HEIGHT_RATIO = 0.19 # Filters Distant People not in Queue
+MIN_QUEUE_HEIGHT_RATIO = 0.20 # Filters Distant People not in Queue
+QUEUE_REGION = None  # Will be set based on image - define your queue region here
+QUEUE_REGION_THRESHOLD = 0.6  # 60% of person must be in region
 
 
 # Base route
@@ -52,6 +55,22 @@ async def count_queue_debug(file: UploadFile = File(...)):
     image = np.array(pil_image)
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
+    # Get queue regions - customize here
+    # Middle region: Horizontal rectangle spanning entire width (offset 20% left), 40% height starting from middle
+    queue_x_start = int(width * 0.20)
+    queue_y_start = int(height / 2)
+    queue_y_end = int(height / 2 + height * 0.4)
+    queue_region_middle = (queue_x_start, queue_y_start, width, queue_y_end)
+    
+    # Bottom region: Horizontal rectangle spanning entire width, 30% height starting from 70% down
+    queue_y_bottom_start = int(height * 0.70)
+    queue_y_bottom_end = height
+    queue_region_bottom = (0, queue_y_bottom_start, width, queue_y_bottom_end)
+    
+    # Draw queue regions on image for visualization (cyan for middle, magenta for bottom)
+    cv2.rectangle(image, (queue_region_middle[0], queue_region_middle[1]), (queue_region_middle[2], queue_region_middle[3]), (200, 200, 0), 2)
+    cv2.rectangle(image, (queue_region_bottom[0], queue_region_bottom[1]), (queue_region_bottom[2], queue_region_bottom[3]), (255, 0, 255), 2)
+
     # Run YOLO detection
     results = model(pil_image, conf=0.25)
     all_keypoints = []
@@ -65,21 +84,83 @@ async def count_queue_debug(file: UploadFile = File(...)):
     queue_count = 0
     
     boxes = results[0].boxes.xyxy
+    keypoints_all = results[0].keypoints.xy
 
-    for box in boxes:
+    for i, box in enumerate(boxes):
         x1, y1, x2, y2 = map(int, box.tolist())
         bbox_height = y2 - y1
         relative_height = bbox_height / height
 
-        # Check if this person is a queue member
-        in_queue = True
-        if relative_height < MIN_QUEUE_HEIGHT_RATIO:
+        keypoints = keypoints_all[i].cpu().numpy()
+        angle = estimate_head_rotation_from_ear_width(keypoints)
+        # Head keypoints indices
+        head_kp_indices = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
+        head_pts = keypoints[head_kp_indices]
+
+        # Remove missing points (where x=0 and y=0)
+        valid_pts = head_pts[~np.any(head_pts == 0, axis=1)]
+
+        head_in_bottom_region = False
+        if len(valid_pts) > 0:
+            # Get tight bounding box around head
+            x_min = int(np.min(valid_pts[:, 0]))
+            y_min = int(np.min(valid_pts[:, 1]))
+            x_max = int(np.max(valid_pts[:, 0]))
+            y_max = int(np.max(valid_pts[:, 1]))
+
+            # Optional: expand box slightly for better visualization
+            pad_x = int((x_max - x_min) * 0.2)
+            pad_y = int((y_max - y_min) * 0.3)
+            x_min = max(0, x_min - pad_x)
+            y_min = max(0, y_min - pad_y)
+            x_max = min(width, x_max + pad_x)
+            y_max = min(height, y_max + pad_y)
+
+            # Draw head box (blue)
+            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (255, 0, 0), 2)
+
+            # Draw head rotation angle above head
+            if angle is not None:
+                cv2.putText(
+                    image,
+                    f"Head: {angle}°",
+                    (x_min, y_min - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    2
+                )
+            
+            # Check if head is in bottom region
+            head_box = [x_min, y_min, x_max, y_max]
+            head_in_bottom_region = is_in_queue_region(head_box, queue_region_bottom, threshold=0.5)
+
+        angle_ok = 0 <= angle <= 10 if angle is not None else False
+        # Check if person is in either queue region (middle or bottom)
+        in_middle_region = is_in_queue_region(box.tolist(), queue_region_middle, QUEUE_REGION_THRESHOLD)
+        in_bottom_region = is_in_queue_region(box.tolist(), queue_region_bottom, QUEUE_REGION_THRESHOLD)
+        
+        # Display region status above bounding box
+        region_status = "Middle" if in_middle_region else ("Bottom" if in_bottom_region else "Outside")
+        cv2.putText(
+            image,
+            f"Region: {region_status}",
+            (x1, y1 - 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            2
+        )
+        
+        # If head is detected in bottom region, exclude person from queue
+        if head_in_bottom_region or in_bottom_region:
             in_queue = False
-
+        else:
+            in_queue = angle_ok and in_middle_region and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
+        
         # Draw bounding boxes
-        color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = queue, Red = ignored
+        color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = in queue region, Red = outside
         cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-
         if in_queue:
             queue_count += 1
     # Convert back to PIL and then to bytes
@@ -91,6 +172,70 @@ async def count_queue_debug(file: UploadFile = File(...)):
 
     print(f"Persons in queue: {queue_count}")
     return StreamingResponse(buf, media_type="image/jpeg")
+
+
+def get_queue_region(width, height, position="left", percentage=0.33):
+    """
+    Define the queue region dynamically based on image dimensions.
+    
+    Args:
+        width: Image width
+        height: Image height
+        position: "left", "right", "center", or tuple (x1, y1, x2, y2) for custom region
+        percentage: What percentage of width the region should cover (0.0 to 1.0)
+    
+    Returns:
+        tuple: (x1, y1, x2, y2) - queue region coordinates
+    """
+    region_width = int(width * percentage)
+    
+    if isinstance(position, tuple):
+        # Custom region provided
+        return position
+    elif position == "left":
+        return (0, 0, region_width, height)
+    elif position == "right":
+        return (width - region_width, 0, width, height)
+    elif position == "center":
+        start_x = (width - region_width) // 2
+        return (start_x, 0, start_x + region_width, height)
+    else:
+        return (0, 0, region_width, height)
+
+
+def is_in_queue_region(bbox, region, threshold=0.6):
+    """
+    Check if a bounding box overlaps with the queue region by at least threshold percentage.
+    
+    Args:
+        bbox: [x1, y1, x2, y2] - person's bounding box
+        region: (x1, y1, x2, y2) - queue region box
+        threshold: percentage of bbox that must be in region (0.0 to 1.0)
+    
+    Returns:
+        bool: True if >= threshold% of bbox is within region
+    """
+    x1_bbox, y1_bbox, x2_bbox, y2_bbox = bbox
+    x1_region, y1_region, x2_region, y2_region = region
+    
+    # Calculate intersection box
+    x1_inter = max(x1_bbox, x1_region)
+    y1_inter = max(y1_bbox, y1_region)
+    x2_inter = min(x2_bbox, x2_region)
+    y2_inter = min(y2_bbox, y2_region)
+    
+    # If no intersection, return False
+    if x2_inter < x1_inter or y2_inter < y1_inter:
+        return False
+    
+    # Calculate areas
+    intersection_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+    bbox_area = (x2_bbox - x1_bbox) * (y2_bbox - y1_bbox)
+    
+    # Calculate overlap percentage
+    overlap_ratio = intersection_area / bbox_area if bbox_area > 0 else 0
+    
+    return overlap_ratio >= threshold
 
 
 def count_heads_feet_in_box(keypoints, box, eps=20):
