@@ -43,15 +43,21 @@ async def count_queue_debug(file: UploadFile = File(...)):
     image = np.array(pil_image)
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
-    # Get queue region - customize here
-    # Horizontal rectangle spanning entire width (offset 20% left), 40% height starting from middle
-    queue_x_start = int(width * 0.10)
+    # Get queue regions - customize here
+    # Middle region: Horizontal rectangle spanning entire width (offset 20% left), 40% height starting from middle
+    queue_x_start = int(width * 0.20)
     queue_y_start = int(height / 2)
     queue_y_end = int(height / 2 + height * 0.4)
-    queue_region = (queue_x_start, queue_y_start, width, queue_y_end)
+    queue_region_middle = (queue_x_start, queue_y_start, width, queue_y_end)
     
-    # Draw queue region on image for visualization
-    cv2.rectangle(image, (queue_region[0], queue_region[1]), (queue_region[2], queue_region[3]), (200, 200, 0), 2)
+    # Bottom region: Horizontal rectangle spanning entire width, 30% height starting from 70% down
+    queue_y_bottom_start = int(height * 0.70)
+    queue_y_bottom_end = height
+    queue_region_bottom = (0, queue_y_bottom_start, width, queue_y_bottom_end)
+    
+    # Draw queue regions on image for visualization (cyan for middle, magenta for bottom)
+    cv2.rectangle(image, (queue_region_middle[0], queue_region_middle[1]), (queue_region_middle[2], queue_region_middle[3]), (200, 200, 0), 2)
+    cv2.rectangle(image, (queue_region_bottom[0], queue_region_bottom[1]), (queue_region_bottom[2], queue_region_bottom[3]), (255, 0, 255), 2)
 
     # Run YOLO detection
     results = model(pil_image, conf=0.25)
@@ -82,6 +88,7 @@ async def count_queue_debug(file: UploadFile = File(...)):
         # Remove missing points (where x=0 and y=0)
         valid_pts = head_pts[~np.any(head_pts == 0, axis=1)]
 
+        head_in_bottom_region = False
         if len(valid_pts) > 0:
             # Get tight bounding box around head
             x_min = int(np.min(valid_pts[:, 0]))
@@ -111,11 +118,21 @@ async def count_queue_debug(file: UploadFile = File(...)):
                     (0, 255, 0),
                     2
                 )
+            
+            # Check if head is in bottom region
+            head_box = [x_min, y_min, x_max, y_max]
+            head_in_bottom_region = is_in_queue_region(head_box, queue_region_bottom, threshold=0.5)
 
         angle_ok = 0 <= angle <= 10 if angle is not None else False
-        # Check if person is in queue region
-        in_region = is_in_queue_region(box.tolist(), queue_region, QUEUE_REGION_THRESHOLD)
-        in_queue = angle_ok and in_region and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
+        # Check if person is in either queue region (middle or bottom)
+        in_middle_region = is_in_queue_region(box.tolist(), queue_region_middle, QUEUE_REGION_THRESHOLD)
+        in_bottom_region = is_in_queue_region(box.tolist(), queue_region_bottom, QUEUE_REGION_THRESHOLD)
+        
+        # If head is detected in bottom region, exclude person from queue
+        if head_in_bottom_region:
+            in_queue = False
+        else:
+            in_queue = angle_ok and (in_middle_region or in_bottom_region) and (relative_height >= MIN_QUEUE_HEIGHT_RATIO)
         
         # Draw bounding boxes
         color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = in queue region, Red = outside
