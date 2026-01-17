@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
 import { supabase } from '@/lib/supabase';
 import type { Stall, QueueStatus, StallId } from '@/lib/types';
+import Navbar from './components/Navbar';
 
 // Stall display names mapping
 const STALL_NAMES: Record<StallId, string> = {
@@ -114,21 +114,15 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-900">
+      {/* Navbar */}
+      <Navbar />
+
       {/* Header */}
       <header className="bg-gray-800 border-b border-gray-700">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-white">Dining Hall Queue Status</h1>
-              <p className="text-gray-400 mt-1">Real-time queue monitoring for campus dining</p>
-            </div>
-            <Link
-              href="/admin-upload"
-              className="px-4 py-2 bg-blue-600 text-white rounded-md font-medium
-                hover:bg-blue-700 transition-colors text-sm"
-            >
-              Admin Upload
-            </Link>
+          <div>
+            <h1 className="text-3xl font-bold text-white">Dining Hall Queue Status</h1>
+            <p className="text-gray-400 mt-1">Real-time queue monitoring for campus dining</p>
           </div>
         </div>
       </header>

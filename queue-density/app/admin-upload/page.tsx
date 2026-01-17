@@ -2,6 +2,7 @@
 
 import { useState, useRef } from 'react';
 import type { StallId, QueueStatus } from '@/lib/types';
+import Navbar from '../components/Navbar';
 
 // Helper function to determine queue status based on count
 function getQueueStatus(count: number): QueueStatus {
@@ -113,10 +114,14 @@ export default function UploadPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-900 py-8 px-4">
-      <div className="max-w-7xl mx-auto">
-        <h1 className="text-3xl font-bold text-white mb-2">Queue Density Analyzer</h1>
-        <p className="text-gray-400 mb-8">Upload an image to detect and count people in queue</p>
+    <div className="min-h-screen bg-gray-900">
+      {/* Navbar */}
+      <Navbar />
+      
+      <div className="py-8 px-4">
+        <div className="max-w-7xl mx-auto">
+          <h1 className="text-3xl font-bold text-white mb-2">Queue Density Analyzer</h1>
+          <p className="text-gray-400 mb-8">Upload an image to detect and count people in queue</p>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {/* Left Panel: Upload Controls */}
@@ -276,6 +281,7 @@ export default function UploadPage() {
               </div>
             )}
           </div>
+        </div>
         </div>
       </div>
     </div>
