@@ -58,10 +58,6 @@ async def count_queue_debug(file: UploadFile = File(...)):
     queue_y_bottom_end = height
     queue_region_bottom = (0, queue_y_bottom_start, width, queue_y_bottom_end)
     
-    # Draw queue regions on image for visualization (cyan for middle, magenta for bottom)
-    cv2.rectangle(image, (queue_region_middle[0], queue_region_middle[1]), (queue_region_middle[2], queue_region_middle[3]), (200, 200, 0), 2)
-    cv2.rectangle(image, (queue_region_bottom[0], queue_region_bottom[1]), (queue_region_bottom[2], queue_region_bottom[3]), (255, 0, 255), 2)
-
     # Run YOLO detection
     results = model(pil_image, conf=0.25)
     all_keypoints = []
@@ -107,39 +103,6 @@ async def count_queue_debug(file: UploadFile = File(...)):
             if direction is not None:
                 alignment_score = calculate_queue_alignment_score(direction)
         
-        # Draw keypoints for debugging
-        if left_ankle is not None:
-            cv2.circle(image, tuple(left_ankle.astype(int)), 5, (255, 0, 0), -1)  # Blue
-        if right_ankle is not None:
-            cv2.circle(image, tuple(right_ankle.astype(int)), 5, (0, 255, 0), -1)  # Green
-        if left_knee is not None:
-            cv2.circle(image, tuple(left_knee.astype(int)), 5, (255, 128, 0), -1)  # Orange
-        if right_knee is not None:
-            cv2.circle(image, tuple(right_knee.astype(int)), 5, (0, 128, 255), -1)  # Light blue
-        
-        # Draw knee-to-ankle lines
-        if left_knee is not None and left_ankle is not None:
-            cv2.line(image, tuple(left_knee.astype(int)), tuple(left_ankle.astype(int)), (255, 0, 255), 2)
-        if right_knee is not None and right_ankle is not None:
-            cv2.line(image, tuple(right_knee.astype(int)), tuple(right_ankle.astype(int)), (255, 0, 255), 2)
-        
-        # Calculate center point for direction arrow
-        if left_ankle is not None and right_ankle is not None:
-            feet_center = ((left_ankle + right_ankle) / 2).astype(int)
-        elif left_ankle is not None:
-            feet_center = left_ankle.astype(int)
-        elif right_ankle is not None:
-            feet_center = right_ankle.astype(int)
-        else:
-            feet_center = None
-        
-        # Draw direction arrow
-        if direction is not None and feet_center is not None:
-            arrow_length = 40
-            end_x = int(feet_center[0] + arrow_length * math.cos(math.radians(direction)))
-            end_y = int(feet_center[1] + arrow_length * math.sin(math.radians(direction)))
-            cv2.arrowedLine(image, tuple(feet_center), (end_x, end_y), (0, 255, 255), 3, tipLength=0.3)
-        
         # ==================== HEAD ANALYSIS (existing count_debug logic) ====================
         # Head keypoints indices
         head_kp_indices = [0, 1, 2, 3, 4]  # nose, left_eye, right_eye, left_ear, right_ear
@@ -163,21 +126,6 @@ async def count_queue_debug(file: UploadFile = File(...)):
             y_min = max(0, y_min - pad_y)
             x_max = min(width, x_max + pad_x)
             y_max = min(height, y_max + pad_y)
-
-            # Draw head box (blue)
-            cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (255, 0, 0), 2)
-
-            # Draw head rotation angle above head
-            if angle is not None:
-                cv2.putText(
-                    image,
-                    f"Head: {angle}°",
-                    (x_min, y_min - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
-                    2
-                )
             
             # Check if head is in bottom region
             head_box = [x_min, y_min, x_max, y_max]
@@ -188,30 +136,8 @@ async def count_queue_debug(file: UploadFile = File(...)):
         in_middle_region = is_in_queue_region(box.tolist(), queue_region_middle, QUEUE_REGION_THRESHOLD)
         in_bottom_region = is_in_queue_region(box.tolist(), queue_region_bottom, QUEUE_REGION_THRESHOLD)
         
-        # Display region status above bounding box
-        region_status = "Middle" if in_middle_region else ("Bottom" if in_bottom_region else "Outside")
-        cv2.putText(
-            image,
-            f"Region: {region_status}",
-            (x1, y1 - 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            2
-        )
-        
-        # ==================== DISPLAY ALIGNMENT SCORE ====================
-        # Draw alignment score prominently (THIS IS WHAT YOU NEED TO SEE)
-        if alignment_score is not None:
-            cv2.putText(
-                image,
-                f"Align: {alignment_score:.2f}",
-                (x1, y1 - 45),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (0, 255, 255),  # Cyan color to stand out
-                2
-            )
+        # ==================== QUEUE DETECTION LOGIC ====================
+
         
         # If head is detected in bottom region, exclude person from queue
         if head_in_bottom_region:
@@ -226,19 +152,15 @@ async def count_queue_debug(file: UploadFile = File(...)):
             # Person is in queue if EITHER condition is met
             in_queue = original_condition or alignment_condition
         
-        # Draw bounding boxes
-        color = (0, 255, 0) if in_queue else (0, 0, 255)  # Green = in queue region, Red = outside
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         if in_queue:
             queue_count += 1
             # Store valid person's bounding box for distance calculation and track index
             valid_persons.append({'box': [x1, y1, x2, y2], 'original_index': i})
             person_in_queue_status[i] = True
     
-    # ==================== DRAW LINES AND CALCULATE DISTANCES BETWEEN VALID PERSONS ====================
+    # ==================== CALCULATE DISTANCES BETWEEN VALID PERSONS (logic only) ====================
     # Starting point: left-most corner of middle region
     region_start_point = (queue_x_start, queue_y_start)
-    cv2.circle(image, region_start_point, 8, (255, 0, 0), -1)  # Blue circle at start point
     
     if len(valid_persons) > 0:
         # Calculate left-hand corners and distances for each person
@@ -302,69 +224,6 @@ async def count_queue_debug(file: UploadFile = File(...)):
         # Update person_in_queue_status to invalidate excluded persons
         for excluded_idx in excluded_indices:
             person_in_queue_status[excluded_idx] = False
-        
-        # Draw circles at all corners
-        for person_data in sorted_persons:
-            cv2.circle(image, person_data['left_corner'], 5, (0, 200, 255), -1)
-        
-        # Draw continuous chain connecting consecutive persons and calculate distances
-        for idx in range(len(sorted_persons)):
-            if idx == 0:
-                # First person: draw line from region start
-                current_person = sorted_persons[idx]
-                
-                # Use different color if person is outside queue
-                line_color = (0, 200, 255) if current_person in queue_members else (0, 0, 255)
-                
-                cv2.line(image, region_start_point, current_person['left_corner'], line_color, 2)
-                
-                distance = math.sqrt((region_start_point[0] - current_person['left_corner'][0])**2 + 
-                                   (region_start_point[1] - current_person['left_corner'][1])**2)
-                
-                midpoint = ((region_start_point[0] + current_person['left_corner'][0]) // 2, 
-                           (region_start_point[1] + current_person['left_corner'][1]) // 2)
-                cv2.putText(
-                    image,
-                    f"Start->P1: {distance:.1f}px",
-                    midpoint,
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    line_color,
-                    2
-                )
-            else:
-                # Consecutive persons: calculate distance between leftmost corners
-                prev_person = sorted_persons[idx - 1]
-                curr_person = sorted_persons[idx]
-                
-                prev_corner = prev_person['left_corner']
-                curr_corner = curr_person['left_corner']
-                
-                # Use different color if person is outside queue
-                line_color = (0, 200, 255) if curr_person in queue_members else (0, 0, 255)
-                
-                # Draw line between persons
-                cv2.line(image, prev_corner, curr_corner, line_color, 2)
-                
-                # Calculate distance between consecutive persons
-                distance = math.sqrt((prev_corner[0] - curr_corner[0])**2 + (prev_corner[1] - curr_corner[1])**2)
-                
-                # Mark with warning if exceeds threshold
-                distance_label = f"P{idx}->P{idx+1}: {distance:.1f}px"
-                if distance > CONSECUTIVE_PERSON_DISTANCE_THRESHOLD:
-                    distance_label += " [BREAK]"
-                
-                # Draw distance text at midpoint
-                midpoint = ((prev_corner[0] + curr_corner[0]) // 2, (prev_corner[1] + curr_corner[1]) // 2)
-                cv2.putText(
-                    image,
-                    distance_label,
-                    midpoint,
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    line_color,
-                    2
-                )
         
         # Print sorted persons for debugging
         print(f"Threshold for queue break: {CONSECUTIVE_PERSON_DISTANCE_THRESHOLD}px")
