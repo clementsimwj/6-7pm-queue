@@ -201,7 +201,7 @@ export default function UploadPage() {
                       Processing...
                     </span>
                   ) : (
-                    'Analyze Queue'
+                    'Publish Current Queue'
                   )}
                 </button>
 
