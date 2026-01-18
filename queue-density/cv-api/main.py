@@ -152,11 +152,13 @@ async def count_queue_debug(file: UploadFile = File(...)):
             # Person is in queue if EITHER condition is met
             in_queue = original_condition or alignment_condition
         
+        # Track ALL persons regardless of queue status
+        person_in_queue_status[i] = in_queue
+        
         if in_queue:
             queue_count += 1
             # Store valid person's bounding box for distance calculation and track index
             valid_persons.append({'box': [x1, y1, x2, y2], 'original_index': i})
-            person_in_queue_status[i] = True
     
     # ==================== CALCULATE DISTANCES BETWEEN VALID PERSONS (logic only) ====================
     # Starting point: left-most corner of middle region
